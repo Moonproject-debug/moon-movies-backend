@@ -85,7 +85,7 @@ app.get('/sitemap.xml', async (req, res) => {
         try {
             const moviesSnapshot = await db.collection('movies')
                 .orderBy('addedAt', 'desc')
-                .limit(500) // Limit to 500 movies for sitemap
+                .limit(500)
                 .get();
                 
             moviesSnapshot.forEach(doc => {
@@ -427,6 +427,8 @@ app.get('/api/movie/:id', async (req, res) => {
     }
 });
 
+// ==================== FIXED SEARCH ENDPOINT ====================
+// Yeh search case-insensitive hai aur kisi bhi jagah se match karega
 app.get('/api/search', async (req, res) => {
     try {
         const { q } = req.query;
@@ -435,28 +437,51 @@ app.get('/api/search', async (req, res) => {
             return res.status(400).json({ success: false, error: 'Search query required' });
         }
         
-        const searchTerm = q.toLowerCase();
+        const searchTerm = q.toLowerCase().trim();
+        console.log('Searching for:', searchTerm);
         
+        // Get all movies (limit to 100 for performance)
         const moviesSnapshot = await db.collection('movies')
-            .orderBy('title')
-            .startAt(searchTerm)
-            .endAt(searchTerm + '\uf8ff')
-            .limit(20)
+            .limit(100)
             .get();
         
         const movies = [];
+        
         moviesSnapshot.forEach(doc => {
             const data = doc.data();
-            movies.push({
-                id: doc.id,
-                title: data.title,
-                poster: data.poster || '',
-                categoryId: data.categoryId,
-                type: data.type || 'movie'
-            });
+            const title = data.title || '';
+            
+            // Case-insensitive search - check if search term exists ANYWHERE in title
+            if (title.toLowerCase().includes(searchTerm)) {
+                // Extract year from title if present (e.g., (2019))
+                const yearMatch = title.match(/\((\d{4})\)/);
+                const year = yearMatch ? yearMatch[1] : '';
+                
+                movies.push({
+                    id: doc.id,
+                    title: title,
+                    poster: data.poster || '',
+                    categoryId: data.categoryId,
+                    type: data.type || 'movie',
+                    year: year,
+                    // Relevance score for sorting (exact matches first)
+                    relevance: title.toLowerCase() === searchTerm ? 3 :
+                              title.toLowerCase().startsWith(searchTerm) ? 2 : 1
+                });
+            }
         });
         
-        res.json({ success: true, query: q, movies });
+        // Sort by relevance (exact matches first, then starts with, then contains)
+        movies.sort((a, b) => b.relevance - a.relevance);
+        
+        console.log(`Found ${movies.length} movies for "${searchTerm}"`);
+        
+        res.json({ 
+            success: true, 
+            query: q, 
+            movies: movies.slice(0, 20) // Limit to 20 results
+        });
+        
     } catch (error) {
         console.error('Error searching:', error);
         res.status(500).json({ success: false, error: error.message });
