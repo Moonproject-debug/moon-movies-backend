@@ -45,19 +45,108 @@ app.get('/api/health', (req, res) => {
     res.json({ status: 'OK', message: 'API is running', timestamp: new Date().toISOString() });
 });
 
-// ==================== DEBUG ENDPOINTS ====================
+// ==================== SITEMAP GENERATOR ====================
+app.get('/sitemap.xml', async (req, res) => {
+    try {
+        res.set('Content-Type', 'application/xml');
+        res.set('Cache-Control', 'public, max-age=3600');
+        
+        let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+        xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
+        
+        // Homepage
+        xml += `  <url>\n`;
+        xml += `    <loc>https://moonmovieshub.free.nf/</loc>\n`;
+        xml += `    <lastmod>${new Date().toISOString().split('T')[0]}</lastmod>\n`;
+        xml += `    <changefreq>daily</changefreq>\n`;
+        xml += `    <priority>1.0</priority>\n`;
+        xml += `  </url>\n`;
+        
+        // Get all categories
+        try {
+            const categoriesSnapshot = await db.collection('categories')
+                .orderBy('order', 'asc')
+                .get();
+            
+            categoriesSnapshot.forEach(doc => {
+                const category = doc.data();
+                xml += `  <url>\n`;
+                xml += `    <loc>https://moonmovieshub.free.nf/category.html?slug=${category.slug || doc.id}</loc>\n`;
+                xml += `    <lastmod>${new Date().toISOString().split('T')[0]}</lastmod>\n`;
+                xml += `    <changefreq>weekly</changefreq>\n`;
+                xml += `    <priority>0.8</priority>\n`;
+                xml += `  </url>\n`;
+            });
+        } catch (error) {
+            console.error('Error fetching categories for sitemap:', error);
+        }
+        
+        // Get all movies
+        try {
+            const moviesSnapshot = await db.collection('movies')
+                .orderBy('addedAt', 'desc')
+                .limit(500) // Limit to 500 movies for sitemap
+                .get();
+                
+            moviesSnapshot.forEach(doc => {
+                const movie = doc.data();
+                const lastmod = movie.addedAt ? 
+                    (movie.addedAt.toDate ? movie.addedAt.toDate().toISOString().split('T')[0] : new Date().toISOString().split('T')[0]) 
+                    : new Date().toISOString().split('T')[0];
+                    
+                xml += `  <url>\n`;
+                xml += `    <loc>https://moonmovieshub.free.nf/movie.html?id=${doc.id}</loc>\n`;
+                xml += `    <lastmod>${lastmod}</lastmod>\n`;
+                xml += `    <changefreq>monthly</changefreq>\n`;
+                xml += `    <priority>0.6</priority>\n`;
+                xml += `  </url>\n`;
+            });
+        } catch (error) {
+            console.error('Error fetching movies for sitemap:', error);
+        }
+        
+        // Add static pages
+        const staticPages = ['404.html', 'search.html'];
+        staticPages.forEach(page => {
+            xml += `  <url>\n`;
+            xml += `    <loc>https://moonmovieshub.free.nf/${page}</loc>\n`;
+            xml += `    <lastmod>${new Date().toISOString().split('T')[0]}</lastmod>\n`;
+            xml += `    <changefreq>monthly</changefreq>\n`;
+            xml += `    <priority>0.3</priority>\n`;
+            xml += `  </url>\n`;
+        });
+        
+        xml += '</urlset>';
+        
+        res.send(xml);
+    } catch (error) {
+        console.error('Sitemap generation error:', error);
+        res.status(500).send('Error generating sitemap');
+    }
+});
 
-// Debug: Check Firestore connection and movies
+// ==================== ROBOTS.TXT ====================
+app.get('/robots.txt', (req, res) => {
+    res.set('Content-Type', 'text/plain');
+    res.send(`# robots.txt for Moon Movies Hub
+User-agent: *
+Allow: /
+Disallow: /admin/
+Disallow: /search.html
+Sitemap: https://moon-movies-backend.vercel.app/sitemap.xml
+Host: https://moonmovieshub.free.nf
+Crawl-delay: 1`);
+});
+
+// ==================== DEBUG ENDPOINTS ====================
 app.get('/api/debug/movies', async (req, res) => {
     try {
         console.log('Debug: Checking movies collection');
         
-        // Check if db is initialized
         if (!db) {
             return res.status(500).json({ error: 'Firestore not initialized' });
         }
         
-        // Try to get a single movie
         const snapshot = await db.collection('movies').limit(1).get();
         
         const movies = [];
@@ -73,7 +162,6 @@ app.get('/api/debug/movies', async (req, res) => {
             });
         });
         
-        // Get total count
         const countSnapshot = await db.collection('movies').count().get();
         const total = countSnapshot.data().count;
         
@@ -94,10 +182,8 @@ app.get('/api/debug/movies', async (req, res) => {
     }
 });
 
-// Debug: Create test movie (if none exist)
 app.get('/api/debug/create-test-movie', async (req, res) => {
     try {
-        // First check if we have any categories
         const categoriesSnapshot = await db.collection('categories').limit(1).get();
         
         if (categoriesSnapshot.empty) {
@@ -108,10 +194,9 @@ app.get('/api/debug/create-test-movie', async (req, res) => {
         
         const firstCategory = categoriesSnapshot.docs[0];
         
-        // Create test movie
         const testMovie = {
             title: 'Test Movie ' + new Date().toLocaleDateString(),
-            poster: '',
+            poster: 'https://via.placeholder.com/300x450?text=Test+Movie',
             description: 'This is a test movie created by debug endpoint',
             categoryId: firstCategory.id,
             type: 'movie',
@@ -141,9 +226,7 @@ app.get('/api/debug/create-test-movie', async (req, res) => {
     }
 });
 
-// ==================== PUBLIC ROUTES (FIXED) ====================
-
-// Get all categories
+// ==================== PUBLIC ROUTES ====================
 app.get('/api/categories', async (req, res) => {
     try {
         const categoriesSnapshot = await db.collection('categories')
@@ -165,14 +248,12 @@ app.get('/api/categories', async (req, res) => {
     }
 });
 
-// Get latest movies - FIXED VERSION with better error handling
 app.get('/api/movies/latest', async (req, res) => {
     try {
         const { page, limit } = getPagination(req.query.page, req.query.limit);
         
         console.log(`Fetching movies: page=${page}, limit=${limit}`);
         
-        // First check if movies collection exists and has data
         const countCheck = await db.collection('movies').count().get();
         const totalMovies = countCheck.data().count;
         
@@ -193,25 +274,15 @@ app.get('/api/movies/latest', async (req, res) => {
             });
         }
         
-        // Try to get movies without filter first (to debug)
-        const allMoviesSnapshot = await db.collection('movies')
-            .limit(1)
-            .get();
-        
-        console.log('Sample movie fields:', allMoviesSnapshot.docs[0]?.data() ? Object.keys(allMoviesSnapshot.docs[0].data()) : 'No movies');
-        
-        // Now get paginated movies
-        let moviesQuery = db.collection('movies')
+        const moviesSnapshot = await db.collection('movies')
             .orderBy('addedAt', 'desc')
             .limit(limit)
-            .offset((page - 1) * limit);
-        
-        const moviesSnapshot = await moviesQuery.get();
+            .offset((page - 1) * limit)
+            .get();
         
         const movies = [];
         moviesSnapshot.forEach(doc => {
             const data = doc.data();
-            // Format the movie properly
             movies.push({
                 id: doc.id,
                 title: data.title || 'Untitled',
@@ -241,27 +312,22 @@ app.get('/api/movies/latest', async (req, res) => {
         });
     } catch (error) {
         console.error('Error in /api/movies/latest:', error);
-        
-        // Detailed error response
         res.status(500).json({ 
             success: false, 
             error: error.message,
             details: {
                 name: error.name,
-                code: error.code,
-                stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+                code: error.code
             }
         });
     }
 });
 
-// Get movies by category - FIXED VERSION
 app.get('/api/category/:slug/movies', async (req, res) => {
     try {
         const { slug } = req.params;
         const { page, limit } = getPagination(req.query.page, req.query.limit);
         
-        // Get category by slug
         const categorySnapshot = await db.collection('categories')
             .where('slug', '==', slug)
             .limit(1)
@@ -274,7 +340,6 @@ app.get('/api/category/:slug/movies', async (req, res) => {
         const categoryDoc = categorySnapshot.docs[0];
         const categoryId = categoryDoc.id;
         
-        // Get movies in this category
         const moviesSnapshot = await db.collection('movies')
             .where('categoryId', '==', categoryId)
             .orderBy('addedAt', 'desc')
@@ -298,7 +363,6 @@ app.get('/api/category/:slug/movies', async (req, res) => {
             });
         });
         
-        // Get total count
         const totalSnapshot = await db.collection('movies')
             .where('categoryId', '==', categoryId)
             .count()
@@ -326,7 +390,6 @@ app.get('/api/category/:slug/movies', async (req, res) => {
     }
 });
 
-// Get single movie by ID
 app.get('/api/movie/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -350,7 +413,6 @@ app.get('/api/movie/:id', async (req, res) => {
             addedAt: data.addedAt ? (data.addedAt.toDate ? data.addedAt.toDate() : new Date(data.addedAt)) : new Date()
         };
         
-        // Get category info
         if (movie.categoryId) {
             const categoryDoc = await db.collection('categories').doc(movie.categoryId).get();
             if (categoryDoc.exists) {
@@ -365,7 +427,6 @@ app.get('/api/movie/:id', async (req, res) => {
     }
 });
 
-// Search movies
 app.get('/api/search', async (req, res) => {
     try {
         const { q } = req.query;
@@ -403,8 +464,6 @@ app.get('/api/search', async (req, res) => {
 });
 
 // ==================== ADMIN ROUTES ====================
-
-// Admin login
 app.post('/api/admin/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -446,7 +505,6 @@ app.post('/api/admin/login', async (req, res) => {
     }
 });
 
-// Admin token verification middleware
 const verifyAdminToken = async (req, res, next) => {
     try {
         const token = req.headers.authorization?.split(' ')[1];
@@ -471,7 +529,6 @@ const verifyAdminToken = async (req, res, next) => {
     }
 };
 
-// Get all movies (admin)
 app.get('/api/admin/movies', verifyAdminToken, async (req, res) => {
     try {
         const { page, limit } = getPagination(req.query.page, 50);
@@ -498,7 +555,6 @@ app.get('/api/admin/movies', verifyAdminToken, async (req, res) => {
     }
 });
 
-// Add new movie
 app.post('/api/admin/movies', verifyAdminToken, async (req, res) => {
     try {
         const movieData = req.body;
@@ -531,7 +587,6 @@ app.post('/api/admin/movies', verifyAdminToken, async (req, res) => {
     }
 });
 
-// Update movie
 app.put('/api/admin/movies/:id', verifyAdminToken, async (req, res) => {
     try {
         const { id } = req.params;
@@ -547,7 +602,6 @@ app.put('/api/admin/movies/:id', verifyAdminToken, async (req, res) => {
     }
 });
 
-// Delete movie
 app.delete('/api/admin/movies/:id', verifyAdminToken, async (req, res) => {
     try {
         const { id } = req.params;
@@ -558,7 +612,6 @@ app.delete('/api/admin/movies/:id', verifyAdminToken, async (req, res) => {
     }
 });
 
-// Category management
 app.post('/api/admin/categories', verifyAdminToken, async (req, res) => {
     try {
         const { name, order } = req.body;
